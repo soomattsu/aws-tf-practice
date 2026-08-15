@@ -8,6 +8,7 @@ terraform {
     }
   }
 
+  # backend用S3自体をTerraformで作成する場合、ローカルで作成→backend設定を追加してinit -migrate-stateが通例
   backend "s3" {
     key = "bootstrap/state-backend/terraform.tfstate"
     # other args are inserted by backend.hcl
