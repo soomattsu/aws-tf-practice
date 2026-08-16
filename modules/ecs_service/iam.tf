@@ -12,7 +12,7 @@ data "aws_iam_policy_document" "ecs_task_execution_trust" {
 # ECSのタスク実行ロール
 # ECSコンテナエージェント（AWSサービス側）にAssumeされ、CloudWatchロギングとECR image pullに使われる
 resource "aws_iam_role" "ecs_task_execution" {
-  name               = "tf-practice-ecs-task-execution"
+  name               = "${var.name_prefix}-${var.service_name}-ecs-task-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_execution_trust.json
 }
 
