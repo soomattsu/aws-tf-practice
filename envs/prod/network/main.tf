@@ -101,29 +101,3 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[each.key].id
   subnet_id      = aws_subnet.main[each.value.name].id
 }
-
-# ALB用SG（Terraformから作成したSGには、デフォルトのegress全許可は含まれないので、明示的Egressが必要）
-resource "aws_security_group" "alb" {
-  name        = "tf-practice-alb"
-  description = "ALB ingress from Internet"
-  vpc_id      = aws_vpc.main.id
-  tags = {
-    Name = "tf-practice-alb-sg"
-  }
-}
-
-# port:80への全TCP通信を許可
-resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = "0.0.0.0/0"
-  from_port         = 80
-  to_port           = 80
-  ip_protocol       = "tcp"
-}
-
-# 全egressを許可
-resource "aws_vpc_security_group_egress_rule" "alb_all" {
-  security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
-}
