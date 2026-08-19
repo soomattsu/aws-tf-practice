@@ -19,6 +19,8 @@ resource "aws_ecs_task_definition" "main" {
       portMappings = [
         { containerPort = var.container_port, protocol = "tcp" }
       ]
+      environment = [for k, v in var.environments : { name = k, value = v }]
+      secrets     = [for k, v in var.secrets : { name = k, valueFrom = v }]
       logConfiguration = {
         logDriver = "awslogs"
         options = {

@@ -20,7 +20,7 @@ locals {
   }
 
   name_prefix         = "tf-practice"
-  service_name        = "document"
+  service_name        = "post"
   container_port      = 8080
   vpc_id              = data.terraform_remote_state.main["network"].outputs.vpc_id
   public_subnet_ids   = data.terraform_remote_state.main["network"].outputs.public_subnet_ids
@@ -31,11 +31,22 @@ locals {
 module "ecs_service" {
   source = "../../../modules/ecs_service"
 
-  region                = var.region
-  name_prefix           = local.name_prefix
-  service_name          = local.service_name
-  container_image       = "${local.ecr_repository_urls["document-api"]}:${var.image_tag}"
-  container_port        = local.container_port
+  region          = var.region
+  name_prefix     = local.name_prefix
+  service_name    = local.service_name
+  container_image = "${local.ecr_repository_urls["post-api"]}:${var.image_tag}"
+  container_port  = local.container_port
+  environments = {
+    MYSQL_HOST     = data.terraform_remote_state.main["db"].outputs.cluster_endpoint
+    MYSQL_PORT     = tostring(data.terraform_remote_state.main["db"].outputs.cluster_port)
+    MYSQL_DATABASE = data.terraform_remote_state.main["db"].outputs.database_name
+  }
+  # RDSが生成したシークレットのJSON（{username:..., password:...}）を展開
+  secrets = {
+    MYSQL_USER     = "${data.terraform_remote_state.main["db"].outputs.master_user_secret_arn}:username::"
+    MYSQL_PASSWORD = "${data.terraform_remote_state.main["db"].outputs.master_user_secret_arn}:password::"
+  }
+  secret_arns           = [data.terraform_remote_state.main["db"].outputs.master_user_secret_arn]
   vpc_id                = local.vpc_id
   private_subnet_ids    = local.private_subnet_ids
   ecs_cluster_id        = aws_ecs_cluster.main.id
@@ -80,6 +91,12 @@ resource "aws_lb_target_group" "main" {
     timeout             = 5
     healthy_threshold   = 2
     unhealthy_threshold = 2
+  }
+
+  # TG作成→listenerの参照更新→旧TG削除の順序を保証する
+  # TGは既存listenerから依存されているため、旧TG削除が先に走ると失敗する
+  lifecycle {
+    create_before_destroy = true
   }
 
   deregistration_delay = 30 # デフォルト300秒。destroyの高速化のため

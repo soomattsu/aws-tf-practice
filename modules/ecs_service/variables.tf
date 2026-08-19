@@ -45,3 +45,21 @@ variable "container_port" {
   description = "ECS Taskコンテナがlistenするポート"
   type        = number
 }
+
+variable "environments" {
+  description = "ECS Taskコンテナに渡す平文の環境変数（値は変数値）"
+  type        = map(string)
+  default     = {}
+}
+
+variable "secrets" {
+  description = "ECS Taskコンテナに渡す機密情報（値はARN）"
+  type        = map(string)
+  default     = {}
+}
+
+variable "secret_arns" {
+  description = "タスク実行ロールに取得を許可するシークレットのARN"
+  type        = list(string)
+  default     = []
+}
