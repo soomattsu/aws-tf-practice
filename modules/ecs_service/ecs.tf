@@ -1,7 +1,3 @@
-locals {
-  container_port = 80
-}
-
 resource "aws_cloudwatch_log_group" "main" {
   name              = "/ecs/${var.name_prefix}-${var.service_name}"
   retention_in_days = 1
@@ -18,14 +14,10 @@ resource "aws_ecs_task_definition" "main" {
   container_definitions = jsonencode([
     {
       name      = var.service_name
-      image     = "public.ecr.aws/docker/library/httpd:2.4"
+      image     = var.container_image
       essential = true
       portMappings = [
-        { containerPort = local.container_port, protocol = "tcp" }
-      ]
-      entryPoint = ["sh", "-c"]
-      command = [
-        "/bin/sh -c \"echo '<html><body><h1>Hello World from Fargate</h1></body></html>' > /usr/local/apache2/htdocs/index.html && httpd-foreground\""
+        { containerPort = var.container_port, protocol = "tcp" }
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -58,6 +50,6 @@ resource "aws_ecs_service" "main" {
   load_balancer {
     target_group_arn = var.alb_target_group_arn
     container_name   = var.service_name
-    container_port   = local.container_port
+    container_port   = var.container_port
   }
 }

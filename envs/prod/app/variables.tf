@@ -14,3 +14,12 @@ variable "terraform_exec_role_arn" {
 variable "state_bucket" {
   type = string
 }
+
+variable "image_tag" {
+  type = string
+}
+
+variable "allowed_ingress_cidrs" {
+  description = "ALBへのアクセスを許可するIPリスト"
+  type        = list(string)
+}

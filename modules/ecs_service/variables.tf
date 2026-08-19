@@ -35,3 +35,13 @@ variable "alb_security_group_id" {
   description = "ECS TaskがALBからの転送ingressを受け取るためのSG参照用ID"
   type        = string
 }
+
+variable "container_image" {
+  description = "ECS Taskとして起動するコンテナのdocker imageのURI"
+  type        = string
+}
+
+variable "container_port" {
+  description = "ECS Taskコンテナがlistenするポート"
+  type        = number
+}

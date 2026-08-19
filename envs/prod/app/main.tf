@@ -10,12 +10,24 @@ data "terraform_remote_state" "network" {
   }
 }
 
+data "terraform_remote_state" "ecr" {
+  backend = "s3"
+  config = {
+    bucket  = var.state_bucket
+    key     = "shared/ecr/terraform.tfstate"
+    region  = var.region
+    profile = var.profile
+  }
+}
+
 locals {
-  name_prefix        = "tf-practice"
-  service_name       = "hello"
-  vpc_id             = data.terraform_remote_state.network.outputs.vpc_id
-  public_subnet_ids  = data.terraform_remote_state.network.outputs.public_subnet_ids
-  private_subnet_ids = data.terraform_remote_state.network.outputs.private_subnet_ids
+  name_prefix         = "tf-practice"
+  service_name        = "document"
+  container_port      = 8080
+  vpc_id              = data.terraform_remote_state.network.outputs.vpc_id
+  public_subnet_ids   = data.terraform_remote_state.network.outputs.public_subnet_ids
+  private_subnet_ids  = data.terraform_remote_state.network.outputs.private_subnet_ids
+  ecr_repository_urls = data.terraform_remote_state.ecr.outputs.repository_urls
 }
 
 module "ecs_service" {
@@ -24,6 +36,8 @@ module "ecs_service" {
   region                = var.region
   name_prefix           = local.name_prefix
   service_name          = local.service_name
+  container_image       = "${local.ecr_repository_urls["document-api"]}:${var.image_tag}"
+  container_port        = local.container_port
   vpc_id                = local.vpc_id
   private_subnet_ids    = local.private_subnet_ids
   ecs_cluster_id        = aws_ecs_cluster.main.id
@@ -62,7 +76,7 @@ resource "aws_lb_target_group" "main" {
   vpc_id      = local.vpc_id
 
   health_check {
-    path                = "/"
+    path                = "/healthz"
     matcher             = "200"
     interval            = 30
     timeout             = 5
@@ -96,8 +110,10 @@ resource "aws_security_group" "alb" {
 
 # port:80への全TCP通信を許可
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  for_each = toset(var.allowed_ingress_cidrs)
+
   security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = "0.0.0.0/0"
+  cidr_ipv4         = each.value
   from_port         = 80
   to_port           = 80
   ip_protocol       = "tcp"
