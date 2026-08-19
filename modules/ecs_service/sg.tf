@@ -14,7 +14,7 @@ resource "aws_vpc_security_group_egress_rule" "ecs_task_all" {
   ip_protocol       = "-1"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "ecs_taks_from_alb" {
+resource "aws_vpc_security_group_ingress_rule" "ecs_task_from_alb" {
   security_group_id = aws_security_group.ecs_task.id
   from_port         = var.container_port
   to_port           = var.container_port

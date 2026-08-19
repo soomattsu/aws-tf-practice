@@ -1,33 +1,31 @@
 # ECS ClusterとALB(w/ listener, TG, SG)を作成した後、module:ecs_serviceを呼ぶ
 
-data "terraform_remote_state" "network" {
-  backend = "s3"
-  config = {
-    bucket  = var.state_bucket
-    key     = "envs/prod/network/terraform.tfstate"
-    region  = var.region
-    profile = var.profile
-  }
-}
+data "terraform_remote_state" "main" {
+  for_each = local.remote_states
 
-data "terraform_remote_state" "ecr" {
   backend = "s3"
   config = {
     bucket  = var.state_bucket
-    key     = "shared/ecr/terraform.tfstate"
+    key     = each.value
     region  = var.region
     profile = var.profile
   }
 }
 
 locals {
+  remote_states = {
+    network = "envs/prod/network/terraform.tfstate"
+    ecr     = "shared/ecr/terraform.tfstate"
+    db      = "envs/prod/db/terraform.tfstate"
+  }
+
   name_prefix         = "tf-practice"
   service_name        = "document"
   container_port      = 8080
-  vpc_id              = data.terraform_remote_state.network.outputs.vpc_id
-  public_subnet_ids   = data.terraform_remote_state.network.outputs.public_subnet_ids
-  private_subnet_ids  = data.terraform_remote_state.network.outputs.private_subnet_ids
-  ecr_repository_urls = data.terraform_remote_state.ecr.outputs.repository_urls
+  vpc_id              = data.terraform_remote_state.main["network"].outputs.vpc_id
+  public_subnet_ids   = data.terraform_remote_state.main["network"].outputs.public_subnet_ids
+  private_subnet_ids  = data.terraform_remote_state.main["network"].outputs.private_subnet_ids
+  ecr_repository_urls = data.terraform_remote_state.main["ecr"].outputs.repository_urls
 }
 
 module "ecs_service" {
@@ -124,4 +122,14 @@ resource "aws_vpc_security_group_egress_rule" "alb_all" {
   security_group_id = aws_security_group.alb.id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
+}
+
+# ECS TaskからAuroraを呼び出すために、AuroraのSGへ付与するIngressルール
+# AuroraのSG自体はDB側stateで管理しており、循環参照を避けるために呼び出し側で独立にルール定義する
+resource "aws_vpc_security_group_ingress_rule" "aurora_from_ecs_task" {
+  security_group_id            = data.terraform_remote_state.main["db"].outputs.security_group_id
+  from_port                    = data.terraform_remote_state.main["db"].outputs.cluster_port
+  to_port                      = data.terraform_remote_state.main["db"].outputs.cluster_port
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = module.ecs_service.ecs_task_security_group_id
 }
