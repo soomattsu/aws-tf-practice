@@ -20,37 +20,56 @@ locals {
   }
 
   name_prefix         = "tf-practice"
-  service_name        = "post"
-  container_port      = 8080
   vpc_id              = data.terraform_remote_state.main["network"].outputs.vpc_id
   public_subnet_ids   = data.terraform_remote_state.main["network"].outputs.public_subnet_ids
   private_subnet_ids  = data.terraform_remote_state.main["network"].outputs.private_subnet_ids
   ecr_repository_urls = data.terraform_remote_state.main["ecr"].outputs.repository_urls
+
+  services = {
+    post = {
+      container_image = "${local.ecr_repository_urls["post-api"]}:${var.image_tags["post"]}"
+      container_port  = 8080
+      need_aurora     = true
+      environments = {
+        MYSQL_HOST     = data.terraform_remote_state.main["db"].outputs.cluster_endpoint
+        MYSQL_PORT     = tostring(data.terraform_remote_state.main["db"].outputs.cluster_port)
+        MYSQL_DATABASE = data.terraform_remote_state.main["db"].outputs.database_name
+      }
+      secrets = {
+        # RDSが生成したシークレットのJSON（{username:..., password:...}）を展開
+        MYSQL_USER     = "${data.terraform_remote_state.main["db"].outputs.master_user_secret_arn}:username::"
+        MYSQL_PASSWORD = "${data.terraform_remote_state.main["db"].outputs.master_user_secret_arn}:password::"
+      }
+      secret_arns = [data.terraform_remote_state.main["db"].outputs.master_user_secret_arn]
+    }
+    document = {
+      container_image = "${local.ecr_repository_urls["document-api"]}:${var.image_tags["document"]}"
+      container_port  = 8080
+      need_aurora     = false
+      environments    = {}
+      secrets         = {}
+      secret_arns     = []
+    }
+  }
 }
 
 module "ecs_service" {
   source = "../../../modules/ecs_service"
 
-  region          = var.region
-  name_prefix     = local.name_prefix
-  service_name    = local.service_name
-  container_image = "${local.ecr_repository_urls["post-api"]}:${var.image_tag}"
-  container_port  = local.container_port
-  environments = {
-    MYSQL_HOST     = data.terraform_remote_state.main["db"].outputs.cluster_endpoint
-    MYSQL_PORT     = tostring(data.terraform_remote_state.main["db"].outputs.cluster_port)
-    MYSQL_DATABASE = data.terraform_remote_state.main["db"].outputs.database_name
-  }
-  # RDSが生成したシークレットのJSON（{username:..., password:...}）を展開
-  secrets = {
-    MYSQL_USER     = "${data.terraform_remote_state.main["db"].outputs.master_user_secret_arn}:username::"
-    MYSQL_PASSWORD = "${data.terraform_remote_state.main["db"].outputs.master_user_secret_arn}:password::"
-  }
-  secret_arns           = [data.terraform_remote_state.main["db"].outputs.master_user_secret_arn]
+  for_each = local.services
+
+  region                = var.region
+  name_prefix           = local.name_prefix
+  service_name          = each.key
+  container_image       = each.value.container_image
+  container_port        = each.value.container_port
+  environments          = each.value.environments
+  secrets               = each.value.secrets
+  secret_arns           = each.value.secret_arns
   vpc_id                = local.vpc_id
   private_subnet_ids    = local.private_subnet_ids
   ecs_cluster_id        = aws_ecs_cluster.main.id
-  alb_target_group_arn  = aws_lb_target_group.main.arn
+  alb_target_group_arn  = aws_lb_target_group.main[each.key].arn
   alb_security_group_id = aws_security_group.alb.id
 
   # LBと紐づかないTGを参照してECS Serviceを作るとエラー
@@ -76,7 +95,10 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "main" {
-  name = "${local.name_prefix}-${local.service_name}"
+  # TGは負荷分散先の1単位ごとに作成する。今回は1ALB -> 2ECSの構成なので、ECS毎に作成する
+  for_each = local.services
+
+  name = "${local.name_prefix}-${each.key}"
   # ターゲットをENIのIPアドレスで指定。ECS Taskのnetwork_mode="awspvc"（=Fargate）では必ずこれ
   # （その他インスタンスID, Lambda, ALBなど）
   target_type = "ip"
@@ -108,8 +130,29 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Not Found"
+      status_code  = 404
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "http" {
+  for_each = local.services
+
+  listener_arn = aws_lb_listener.http.arn
+
+  action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.main.arn
+    target_group_arn = aws_lb_target_group.main[each.key].arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/${each.key}*"]
+    }
   }
 }
 
@@ -144,9 +187,10 @@ resource "aws_vpc_security_group_egress_rule" "alb_all" {
 # ECS TaskからAuroraを呼び出すために、AuroraのSGへ付与するIngressルール
 # AuroraのSG自体はDB側stateで管理しており、循環参照を避けるために呼び出し側で独立にルール定義する
 resource "aws_vpc_security_group_ingress_rule" "aurora_from_ecs_task" {
+  for_each                     = { for k, v in local.services : k => v if v.need_aurora }
   security_group_id            = data.terraform_remote_state.main["db"].outputs.security_group_id
   from_port                    = data.terraform_remote_state.main["db"].outputs.cluster_port
   to_port                      = data.terraform_remote_state.main["db"].outputs.cluster_port
   ip_protocol                  = "tcp"
-  referenced_security_group_id = module.ecs_service.ecs_task_security_group_id
+  referenced_security_group_id = module.ecs_service[each.key].ecs_task_security_group_id
 }

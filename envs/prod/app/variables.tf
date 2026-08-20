@@ -15,8 +15,9 @@ variable "state_bucket" {
   type = string
 }
 
-variable "image_tag" {
-  type = string
+variable "image_tags" {
+  description = "ECSサービスごとのコンテナイメージタグ"
+  type        = map(string)
 }
 
 variable "allowed_ingress_cidrs" {
