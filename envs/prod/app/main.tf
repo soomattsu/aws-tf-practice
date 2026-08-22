@@ -72,9 +72,12 @@ module "ecs_service" {
   alb_target_group_arn  = aws_lb_target_group.main[each.key].arn
   alb_security_group_id = aws_security_group.alb.id
 
-  # LBと紐づかないTGを参照してECS Serviceを作るとエラー
-  # LB-TGの紐づけを規定するのはlistenerなので、TGを参照するECS Serviceの作成時は、listenerも必要になる
-  depends_on = [aws_lb_listener.http]
+  # 前提
+  # - LBと紐づかないTGを参照してECS Serviceを作るとエラー
+  # - LB-TGの紐づけを規定するのはlistener or listener_rule
+  # 帰結：TGを参照するECS Serviceの作成は、暗黙的にこれらに依存する
+  # - depends_onは静的参照しか許さないので、each.keyを使った動的参照はエラーになる
+  depends_on = [aws_lb_listener_rule.http]
 }
 
 resource "aws_ecs_cluster" "main" {
@@ -139,6 +142,7 @@ resource "aws_lb_listener" "http" {
   }
 }
 
+# ALBとTGの紐づけを規定する
 resource "aws_lb_listener_rule" "http" {
   for_each = local.services
 
