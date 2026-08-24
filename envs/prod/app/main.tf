@@ -25,13 +25,32 @@ locals {
   private_subnet_ids  = data.terraform_remote_state.main["network"].outputs.private_subnet_ids
   ecr_repository_urls = data.terraform_remote_state.main["ecr"].outputs.repository_urls
 
+  dd_tags = {
+    post = {
+      env     = "prod"
+      service = "post"
+      version = var.image_tags["post"]
+    }
+  }
+
   services = {
     post = {
       containers = {
         post = {
           image = "${local.ecr_repository_urls["post-api"]}:${var.image_tags["post"]}"
           port  = 8080
+          docker_labels = {
+            # datadog-agent sidecarがECS task metadata endpointから読む（コンテナメトリクスに紐づくタグ）
+            "com.datadoghq.tags.env"     = local.dd_tags.post.env
+            "com.datadoghq.tags.service" = local.dd_tags.post.service
+            "com.datadoghq.tags.version" = local.dd_tags.post.version
+          }
           environment = {
+            # dd-trace-goがアプリ内から読む（トレースのspanに紐づくタグ）
+            DD_ENV     = local.dd_tags.post.env
+            DD_SERVICE = local.dd_tags.post.service
+            DD_VERSION = local.dd_tags.post.version
+            # Auroraの接続情報
             MYSQL_HOST     = data.terraform_remote_state.main["db"].outputs.cluster_endpoint
             MYSQL_PORT     = tostring(data.terraform_remote_state.main["db"].outputs.cluster_port)
             MYSQL_DATABASE = data.terraform_remote_state.main["db"].outputs.database_name
@@ -47,6 +66,22 @@ locals {
               json_key = "password"
             }
           }
+          log_configuration = {
+            driver = "awsfirelens"
+            options = {
+              Name           = "datadog"
+              Host           = "http-intake.logs.ap1.datadoghq.com"
+              TLS            = "on"
+              provider       = "ecs"
+              dd_service     = local.dd_tags.post.service
+              dd_source      = "go"
+              dd_message_key = "log"
+              dd_tags        = "env:${local.dd_tags.post.env},version:${local.dd_tags.post.version}"
+            }
+            secret_options = {
+              apikey = aws_secretsmanager_secret.datadog_api_key.arn
+            }
+          }
         }
         datadog-agent = {
           image     = "public.ecr.aws/datadog/agent:latest"
@@ -59,6 +94,23 @@ locals {
           secrets = {
             DD_API_KEY = {
               arn = aws_secretsmanager_secret.datadog_api_key.arn
+            }
+          }
+        }
+        log-router = {
+          image = "public.ecr.aws/aws-observability/aws-for-fluent-bit:stable"
+          # AWS推奨値はtrue。
+          # falseの場合、log-routerが落ちるとlogDriverがログを転送できなくなる。modeに応じてlogDriver上のバッファ(10MB)が埋まった際の挙動が変わる
+          # - non-blocking(デフォルト): バッファ上のログが古い順に失われるが、アプリは動く
+          # - blocking: アプリのstdout/stderr書き込みがブロックされ、生きたままハングする！
+          essential = true
+          firelens_configuration = {
+            type = "fluentbit"
+            options = {
+              "enable-ecs-log-metadata" = "true"
+              # アプリのJSONログをlog-routerのfluent-bitがparseする
+              "config-file-type"  = "file"
+              "config-file-value" = "/fluent-bit/configs/parse-json.conf"
             }
           }
         }

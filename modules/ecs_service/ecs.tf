@@ -5,41 +5,59 @@ resource "aws_cloudwatch_log_group" "main" {
 
 locals {
   container_definitions = [
-    for name, c in var.containers : {
-      name      = name
-      image     = c.image
-      essential = c.essential
-      # Task外へportを公開する際に必要（Task内でlocalhostでのみアクセスされるportについては定義不要）
-      portMappings = c.port != null ? [{ containerPort = c.port, protocol = "tcp" }] : []
-      environment  = [for k, v in c.environment : { name = k, value = v }]
-      secrets = [
-        for k, v in c.secrets : {
-          name      = k
-          valueFrom = v.json_key != null ? "${v.arn}:${v.json_key}::" : v.arn
-        }
-      ]
-      # コンテナログ（stdout/stderr）をどこに・どのように転送するかを設定
-      logConfiguration = {
-        # 共通の仕組み
-        # 1. micro-VM上のコンテナランタイムが匿名pipeを2つ作成し、子プロセスとして起動するTask内の各コンテナがpipeのfdを継承する
-        # 2. Taskコンテナのstdout/stderrへの書き込みが、それぞれのpipeを介してコンテナランタイムへ届く
-        # 3. コンテナランタイムが各pipeのread fdから各Taskコンテナの出力を読み込み、logDriverへ渡す
+    for name, c in var.containers : merge(
+      {
+        name      = name
+        image     = c.image
+        essential = c.essential
+        # Task外へportを公開する際に必要（Task内でlocalhostでのみアクセスされるportについては定義不要）
+        portMappings = c.port != null ? [{ containerPort = c.port, protocol = "tcp" }] : []
+        dockerLabels = c.docker_labels
+        environment  = [for k, v in c.environment : { name = k, value = v }]
+        secrets = [
+          for k, v in c.secrets : {
+            name      = k
+            valueFrom = v.json_key != null ? "${v.arn}:${v.json_key}::" : v.arn
+          }
+        ]
+        /*
+          コンテナログ（stdout/stderr）をどこに・どのように転送するかを設定
 
-        # logDriver設定の実体は「どのLoggerインターフェース実装を利用するか」の指定。Fargateでは以下3つが有効。
-        # - awslogs -> CloudWatchへの転送用
-        # - splunk -> Splunkへの転送用
-        # - awsfirelens -> ユーザー定義のlog-router sidecar(fluentd/fluent bit)を介した、任意の宛先への転送用
-        #   - 糖衣構文であり、この場合のlogDriverの実体はコンテナランタイム側fluentd
-        #   - 「ランタイム側fluentd -> (unix domain socket) -> Task側fluentd/fluent-bit」という流れ
-        #     - logDriver(ランタイム側ns)/log-router(Task側ns間)で、socketファイルをbind mountによって共有している
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.main.name
-          "awslogs-region"        = var.region
-          "awslogs-stream-prefix" = "ecs"
+          共通の仕組み
+          1. micro-VM上のコンテナランタイムが匿名pipeを2つ作成し、子プロセスとして起動するTask内の各コンテナがpipeのfdを継承する
+          2. Taskコンテナのstdout/stderrへの書き込みが、それぞれのpipeを介してコンテナランタイムへ届く
+          3. コンテナランタイムが各pipeのread fdから各Taskコンテナの出力を読み込み、logDriverへ渡す
+
+          logDriver設定の実体は「どのLoggerインターフェース実装を利用するか」の指定。Fargateでは以下3つが有効。
+          - awslogs -> CloudWatchへの転送用
+          - splunk -> Splunkへの転送用
+          - awsfirelens -> ユーザー定義のlog-router sidecar(fluentd/fluent bit)を介した、任意の宛先への転送用
+            - 糖衣構文であり、この場合のlogDriverの実体はコンテナランタイム側fluentd
+            - 「ランタイム側fluentd -> (unix domain socket) -> Task側fluentd/fluent-bit」という流れ
+              - logDriver(ランタイム側ns)/log-router(Task側ns間)で、socketファイルをbind mountによって共有している
+        */
+
+        logConfiguration = {
+          # ログ設定未定義のコンテナでは、デフォルトの転送先としてCloudWatch LogGroupを指定する
+          logDriver = c.log_configuration == null ? "awslogs" : c.log_configuration.driver
+          options = c.log_configuration == null ? tomap({
+            "awslogs-group"         = aws_cloudwatch_log_group.main.name
+            "awslogs-region"        = var.region
+            "awslogs-stream-prefix" = "ecs"
+          }) : c.log_configuration.options
+          secretOptions = c.log_configuration == null ? [] : [
+            for k, v in c.log_configuration.secret_options : { name = k, valueFrom = v }
+          ]
+        }
+      },
+      # log-router用のsidecarコンテナのみが持つキー。nullならmerge()によってキーごと消える
+      c.firelens_configuration == null ? {} : {
+        firelensConfiguration = {
+          type    = c.firelens_configuration.type
+          options = c.firelens_configuration.options
         }
       }
-    }
+    )
   ]
 }
 
@@ -48,7 +66,7 @@ resource "aws_ecs_task_definition" "main" {
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = "256"
-  memory                   = "512"
+  memory                   = "1024"
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
   container_definitions = jsonencode(local.container_definitions)

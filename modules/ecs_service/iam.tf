@@ -24,9 +24,15 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
 
 # Secrets Manager上のシークレットに依存するコンテナがある場合、そのシークレットを取得するpermissionをタスク実行ロールに追加する
 locals {
-  # すべてのcontainers.secrets.arnを抽出（要素数を静的に確定）
+  # タスク実行ロールがGetSecretValueする対象をコンテナ定義から導出
+  # ECSがARNから解決すべきシークレットが2箇所で定義されるので、両方を集約する
+  # - 環境変数(secrets)
+  # - logDriver設定(logConfiguration.secretOptions)
   secret_arns = flatten([
-    for c in values(var.containers) : values(c.secrets)[*].arn
+    for c in values(var.containers) : concat(
+      values(c.secrets)[*].arn,
+      c.log_configuration == null ? [] : values(c.log_configuration.secret_options)
+    )
   ])
 }
 
