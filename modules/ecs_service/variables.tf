@@ -26,40 +26,25 @@ variable "private_subnet_ids" {
   type        = list(string)
 }
 
-variable "alb_target_group_arn" {
-  description = "ECS Serviceが配下のTaskをALBのTGへ登録するためのARN"
-  type        = string
+variable "containers" {
+  description = "Taskを構成するコンテナ群の定義（コンテナ名 => コンテナ定義）"
+  type = map(object({
+    image       = string
+    essential   = optional(bool, true)
+    port        = optional(number) # Task外にexposeするport
+    environment = optional(map(string), {})
+    secrets = optional(map(object({
+      arn      = string           # Secrets Manager上のシークレットのARN
+      json_key = optional(string) # シークレットJSON内の特定キーのみ参照する場合に指定する
+    })), {})
+  }))
 }
 
-variable "alb_security_group_id" {
-  description = "ECS TaskがALBからの転送ingressを受け取るためのSG参照用ID"
-  type        = string
-}
-
-variable "container_image" {
-  description = "ECS Taskとして起動するコンテナのdocker imageのURI"
-  type        = string
-}
-
-variable "container_port" {
-  description = "ECS Taskコンテナがlistenするポート"
-  type        = number
-}
-
-variable "environments" {
-  description = "ECS Taskコンテナに渡す平文の環境変数（値は変数値）"
-  type        = map(string)
-  default     = {}
-}
-
-variable "secrets" {
-  description = "ECS Taskコンテナに渡す機密情報（値はARN）"
-  type        = map(string)
-  default     = {}
-}
-
-variable "secret_arns" {
-  description = "タスク実行ロールに取得を許可するシークレットのARN"
-  type        = list(string)
-  default     = []
+variable "alb_integration" {
+  description = "TaskをALBのターゲットとして登録するための設定"
+  type = object({
+    target_group_arn      = string # Taskが登録されるTGのARN
+    security_group_id     = string # Taskのingress元として許可するALB SGのID
+    target_container_name = string # Taskの内、実際にトラフィックが転送されるコンテナの名前
+  })
 }

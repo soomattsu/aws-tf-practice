@@ -22,19 +22,27 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Secrets Manager上のシークレットに依存するコンテナがある場合、そのシークレットを取得するpermissionをタスク実行ロールに追加する
+locals {
+  # すべてのcontainers.secrets.arnを抽出（要素数を静的に確定）
+  secret_arns = flatten([
+    for c in values(var.containers) : values(c.secrets)[*].arn
+  ])
+}
+
 data "aws_iam_policy_document" "ecs_task_execution_secrets" {
-  count = length(var.secret_arns) > 0 ? 1 : 0
+  count = length(local.secret_arns) > 0 ? 1 : 0
 
   statement {
     effect    = "Allow"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = var.secret_arns
+    resources = local.secret_arns
   }
 }
 
 # タスク実行ロールに直接埋め込むインラインポリシーを定義
 resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
-  count  = length(var.secret_arns) > 0 ? 1 : 0
+  count  = length(local.secret_arns) > 0 ? 1 : 0
   name   = "secrets-access"
   role   = aws_iam_role.ecs_task_execution.id
   policy = data.aws_iam_policy_document.ecs_task_execution_secrets[0].json

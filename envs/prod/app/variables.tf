@@ -24,3 +24,8 @@ variable "allowed_ingress_cidrs" {
   description = "ALBへのアクセスを許可するIPリスト"
   type        = list(string)
 }
+
+variable "datadog_api_key" {
+  type      = string
+  sensitive = true
+}

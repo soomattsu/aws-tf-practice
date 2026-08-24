@@ -27,28 +27,52 @@ locals {
 
   services = {
     post = {
-      container_image = "${local.ecr_repository_urls["post-api"]}:${var.image_tags["post"]}"
-      container_port  = 8080
-      need_aurora     = true
-      environments = {
-        MYSQL_HOST     = data.terraform_remote_state.main["db"].outputs.cluster_endpoint
-        MYSQL_PORT     = tostring(data.terraform_remote_state.main["db"].outputs.cluster_port)
-        MYSQL_DATABASE = data.terraform_remote_state.main["db"].outputs.database_name
+      containers = {
+        post = {
+          image = "${local.ecr_repository_urls["post-api"]}:${var.image_tags["post"]}"
+          port  = 8080
+          environment = {
+            MYSQL_HOST     = data.terraform_remote_state.main["db"].outputs.cluster_endpoint
+            MYSQL_PORT     = tostring(data.terraform_remote_state.main["db"].outputs.cluster_port)
+            MYSQL_DATABASE = data.terraform_remote_state.main["db"].outputs.database_name
+          }
+          secrets = {
+            # RDSがSecrets Manager上に生成したシークレットを参照
+            MYSQL_USER = {
+              arn      = data.terraform_remote_state.main["db"].outputs.master_user_secret_arn
+              json_key = "username"
+            }
+            MYSQL_PASSWORD = {
+              arn      = data.terraform_remote_state.main["db"].outputs.master_user_secret_arn
+              json_key = "password"
+            }
+          }
+        }
+        datadog-agent = {
+          image     = "public.ecr.aws/datadog/agent:latest"
+          essential = false
+          environment = {
+            DD_SITE        = "ap1.datadoghq.com"
+            DD_APM_ENABLED = "true"
+            ECS_FARGATE    = "true"
+          }
+          secrets = {
+            DD_API_KEY = {
+              arn = aws_secretsmanager_secret.datadog_api_key.arn
+            }
+          }
+        }
       }
-      secrets = {
-        # RDSが生成したシークレットのJSON（{username:..., password:...}）を展開
-        MYSQL_USER     = "${data.terraform_remote_state.main["db"].outputs.master_user_secret_arn}:username::"
-        MYSQL_PASSWORD = "${data.terraform_remote_state.main["db"].outputs.master_user_secret_arn}:password::"
-      }
-      secret_arns = [data.terraform_remote_state.main["db"].outputs.master_user_secret_arn]
+      need_aurora = true
     }
     document = {
-      container_image = "${local.ecr_repository_urls["document-api"]}:${var.image_tags["document"]}"
-      container_port  = 8080
-      need_aurora     = false
-      environments    = {}
-      secrets         = {}
-      secret_arns     = []
+      containers = {
+        document = {
+          image = "${local.ecr_repository_urls["document-api"]}:${var.image_tags["document"]}"
+          port  = 8080
+        }
+      }
+      need_aurora = false
     }
   }
 }
@@ -58,19 +82,18 @@ module "ecs_service" {
 
   for_each = local.services
 
-  region                = var.region
-  name_prefix           = local.name_prefix
-  service_name          = each.key
-  container_image       = each.value.container_image
-  container_port        = each.value.container_port
-  environments          = each.value.environments
-  secrets               = each.value.secrets
-  secret_arns           = each.value.secret_arns
-  vpc_id                = local.vpc_id
-  private_subnet_ids    = local.private_subnet_ids
-  ecs_cluster_id        = aws_ecs_cluster.main.id
-  alb_target_group_arn  = aws_lb_target_group.main[each.key].arn
-  alb_security_group_id = aws_security_group.alb.id
+  region             = var.region
+  name_prefix        = local.name_prefix
+  service_name       = each.key
+  vpc_id             = local.vpc_id
+  private_subnet_ids = local.private_subnet_ids
+  ecs_cluster_id     = aws_ecs_cluster.main.id
+  containers         = each.value.containers
+  alb_integration = {
+    target_group_arn      = aws_lb_target_group.main[each.key].arn
+    security_group_id     = aws_security_group.alb.id
+    target_container_name = each.key
+  }
 
   # 前提
   # - LBと紐づかないTGを参照してECS Serviceを作るとエラー
@@ -197,4 +220,15 @@ resource "aws_vpc_security_group_ingress_rule" "aurora_from_ecs_task" {
   to_port                      = data.terraform_remote_state.main["db"].outputs.cluster_port
   ip_protocol                  = "tcp"
   referenced_security_group_id = module.ecs_service[each.key].ecs_task_security_group_id
+}
+
+# datadogのAPI keyをSecrets Managerで管理する
+resource "aws_secretsmanager_secret" "datadog_api_key" {
+  name                    = "${local.name_prefix}-dd-api-key"
+  recovery_window_in_days = 0 # AWS SecretManager側で削除を猶予する日数（tf destroyで消したい場合は0）
+}
+
+resource "aws_secretsmanager_secret_version" "datadog_api_key" {
+  secret_id     = aws_secretsmanager_secret.datadog_api_key.id
+  secret_string = var.datadog_api_key
 }

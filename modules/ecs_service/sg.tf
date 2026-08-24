@@ -24,9 +24,9 @@ resource "aws_vpc_security_group_egress_rule" "ecs_task_all" {
 
 resource "aws_vpc_security_group_ingress_rule" "ecs_task_from_alb" {
   security_group_id = aws_security_group.ecs_task.id
-  from_port         = var.container_port
-  to_port           = var.container_port
+  from_port         = var.containers[var.alb_integration.target_container_name].port
+  to_port           = var.containers[var.alb_integration.target_container_name].port
   ip_protocol       = "tcp"
   # ALBのSGを参照することで、送信元をALBに固定する（cidr指定と排他）
-  referenced_security_group_id = var.alb_security_group_id
+  referenced_security_group_id = var.alb_integration.security_group_id
 }
