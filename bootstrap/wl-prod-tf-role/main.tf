@@ -53,7 +53,7 @@ resource "aws_iam_role" "terraform_exec" {
   max_session_duration = 3600
 }
 
-# 作成するロールにattachするpermission policy
+# 作成したTerraform用ロールに、permission policy(AWS管理ポリシー)をattachする
 resource "aws_iam_role_policy_attachment" "admin" {
   role       = aws_iam_role.terraform_exec.name
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
