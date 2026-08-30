@@ -11,7 +11,12 @@ locals {
         image     = c.image
         essential = c.essential
         # Task外へportを公開する際に必要（Task内でlocalhostでのみアクセスされるportについては定義不要）
-        portMappings = c.port != null ? [{ containerPort = c.port, protocol = "tcp" }] : []
+        portMappings = c.port != null ? [{
+          containerPort = c.port,
+          protocol      = "tcp",
+          # AWS側のデフォルト値補完によってprior stateとconfig間に差分が生じ、revisionが増殖するのを予防する
+          hostPort = c.port
+        }] : []
         dockerLabels = c.docker_labels
         environment  = [for k, v in c.environment : { name = k, value = v }]
         secrets = [
@@ -20,6 +25,7 @@ locals {
             valueFrom = v.json_key != null ? "${v.arn}:${v.json_key}::" : v.arn
           }
         ]
+
         /*
           コンテナログ（stdout/stderr）をどこに・どのように転送するかを設定
 
@@ -36,7 +42,6 @@ locals {
             - 「ランタイム側fluentd -> (unix domain socket) -> Task側fluentd/fluent-bit」という流れ
               - logDriver(ランタイム側ns)/log-router(Task側ns間)で、socketファイルをbind mountによって共有している
         */
-
         logConfiguration = {
           # ログ設定未定義のコンテナでは、デフォルトの転送先としてCloudWatch LogGroupを指定する
           logDriver = c.log_configuration == null ? "awslogs" : c.log_configuration.driver
@@ -49,13 +54,20 @@ locals {
             for k, v in c.log_configuration.secret_options : { name = k, valueFrom = v }
           ]
         }
-      },
-      # log-router用のsidecarコンテナのみが持つキー。nullならmerge()によってキーごと消える
-      c.firelens_configuration == null ? {} : {
-        firelensConfiguration = {
+
+        # AWS側のデフォルト値補完によってprior stateとconfig間に差分が生じ、revisionが増殖するのを予防する
+        mountPoints    = []
+        systemControls = []
+        volumesFrom    = []
+
+        # log-router用のsidecarコンテナのみが持つキー群
+        # 条件trueの場合、TerraformのAWSプロバイダはJSON内の値がnullなフィールドを無視するので、結果的に未定義扱いになる
+        firelensConfiguration = c.firelens_configuration == null ? null : {
           type    = c.firelens_configuration.type
           options = c.firelens_configuration.options
         }
+        # AWS側のデフォルト値補完によってprior stateとconfig間に差分が生じ、revisionが増殖するのを予防する
+        user = c.firelens_configuration == null ? null : "0"
       }
     )
   ]
@@ -92,5 +104,17 @@ resource "aws_ecs_service" "main" {
     target_group_arn = var.alb_integration.target_group_arn
     container_name   = var.alb_integration.target_container_name
     container_port   = var.containers[var.alb_integration.target_container_name].port
+  }
+
+  # lifecycle.ignore_changes: 指定した属性について、prior state(≒実リソース) vs config(HCL評価結果)の差分検知を抑制し、prior stateを正として扱う
+  #   - ここでは「"serviceが指すtask_defのARN"については、prior stateを正とする」という意味
+  #   - 「どのimageをdeployするか＝serviceがどのtask_defを指すか」の定義はGHAの責務になるので、service/task_defの参照関係についてはdriftを許容する
+  # GHAが"ECS Taskのimage更新"のために行う処理
+  #   1. 最新のtask_defを元に、imageのみ差し替えた新規task_def(tf管理外)を作成
+  #   2. 1で作成したtask_defを指すように、ECS Serviceを更新
+  # 注意：Terraformによるtask_defリソース自体の変更（ex. cpu/mem）は、apply実行時ではなく、次回のGHA経由deploy時に環境に反映される！
+  #   - 新しいrevisionのtask_defは作成されるが、それがserviceから参照されるのは、GHAがUpdateServiceをkickしたタイミング
+  lifecycle {
+    ignore_changes = [task_definition]
   }
 }

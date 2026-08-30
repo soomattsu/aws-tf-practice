@@ -30,10 +30,12 @@ data "aws_iam_policy_document" "trust" {
 }
 
 resource "aws_iam_role" "github_actions" {
-  name               = "GitHubActionsEcrPushRole"
+  name               = "GitHubActionsWorkflowRole"
   assume_role_policy = data.aws_iam_policy_document.trust.json
-  description        = "Role to be assumed by GitHub Actions runner in order to push image into ECR"
+  description        = "Entry point role to be assumed by GitHub Actions runner in order to run CI/CD"
 }
+
+# --- ECRへのpushを行うためのpermission policy定義 ---
 
 data "aws_caller_identity" "current" {}
 
@@ -68,4 +70,22 @@ resource "aws_iam_role_policy" "ecr_push" {
   name   = "ecr-push"
   role   = aws_iam_role.github_actions.id
   policy = data.aws_iam_policy_document.ecr_push.json
+}
+
+# --- WorkloadアカウントへのAssume（role chain）を行うためのpermission policy定義 ---
+data "aws_iam_policy_document" "assume_workload" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "sts:AssumeRole",
+      "sts:TagSession"
+    ]
+    resources = var.workload_cd_role_arns
+  }
+}
+
+resource "aws_iam_role_policy" "assume_workload" {
+  name   = "assume-workload-for-cd"
+  role   = aws_iam_role.github_actions.id
+  policy = data.aws_iam_policy_document.assume_workload.json
 }

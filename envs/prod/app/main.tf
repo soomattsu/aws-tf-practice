@@ -25,11 +25,13 @@ locals {
   private_subnet_ids  = data.terraform_remote_state.main["network"].outputs.private_subnet_ids
   ecr_repository_urls = data.terraform_remote_state.main["ecr"].outputs.repository_urls
 
+  initial_image_tag = "bootstrap"
+
   dd_tags = {
     post = {
       env     = "prod"
       service = "post"
-      version = var.image_tags["post"]
+      version = local.initial_image_tag
     }
   }
 
@@ -37,7 +39,7 @@ locals {
     post = {
       containers = {
         post = {
-          image = "${local.ecr_repository_urls["post-api"]}:${var.image_tags["post"]}"
+          image = "${local.ecr_repository_urls["post-api"]}:${local.initial_image_tag}"
           port  = 8080
           docker_labels = {
             # datadog-agent sidecarがECS task metadata endpointから読む（コンテナメトリクスに紐づくタグ）
@@ -120,7 +122,7 @@ locals {
     document = {
       containers = {
         document = {
-          image = "${local.ecr_repository_urls["document-api"]}:${var.image_tags["document"]}"
+          image = "${local.ecr_repository_urls["document-api"]}:${local.initial_image_tag}"
           port  = 8080
         }
       }
