@@ -118,6 +118,10 @@ locals {
         }
       }
       need_aurora = true
+      bluegreen = {
+        prod_port = 8080
+        test_port = 8081
+      }
     }
     document = {
       containers = {
@@ -127,7 +131,30 @@ locals {
         }
       }
       need_aurora = false
+      bluegreen   = null
     }
+  }
+
+  # --- CodeDeployによるB/G deploy用の設定 ---
+
+  # serviceごとにデプロイ方法で分類
+  bluegreen_services = { for k, v in local.services : k => v if v.bluegreen != null }
+  rolling_services   = { for k, v in local.services : k => v if v.bluegreen == null }
+
+  # 定義するTG名の一覧。B/Gデプロイ対象のserviceのみTGを2つ作る（b/gのどちらがprodになるかはCodeDeploy管理下）
+  target_group_keys = toset(flatten([
+    for k, v in local.services : v.bluegreen == null ? [k] : ["${k}-1", "${k}-2"]
+  ]))
+
+  # ingressを許可するcidr x portsの組み合わせを定義
+  alb_listener_ports = concat(
+    [80],
+    [for v in local.bluegreen_services : v.bluegreen.prod_port],
+    [for v in local.bluegreen_services : v.bluegreen.test_port]
+  )
+  alb_ingress_rules = {
+    for pair in setproduct(var.allowed_ingress_cidrs, local.alb_listener_ports) :
+    "${pair[0]}-${pair[1]}" => { cidr = pair[0], port = pair[1] }
   }
 }
 
@@ -144,17 +171,22 @@ module "ecs_service" {
   ecs_cluster_id     = aws_ecs_cluster.main.id
   containers         = each.value.containers
   alb_integration = {
-    target_group_arn      = aws_lb_target_group.main[each.key].arn
+    target_group_arn      = aws_lb_target_group.main[each.value.bluegreen == null ? each.key : "${each.key}-1"].arn
     security_group_id     = aws_security_group.alb.id
     target_container_name = each.key
   }
+  deployment_controller = each.value.bluegreen != null ? "CODE_DEPLOY" : "ECS"
 
   # 前提
   # - LBと紐づかないTGを参照してECS Serviceを作るとエラー
   # - LB-TGの紐づけを規定するのはlistener or listener_rule
   # 帰結：TGを参照するECS Serviceの作成は、暗黙的にこれらに依存する
   # - depends_onは静的参照しか許さないので、each.keyを使った動的参照はエラーになる
-  depends_on = [aws_lb_listener_rule.http]
+  depends_on = [
+    aws_lb_listener_rule.http,
+    aws_lb_listener.bluegreen_prod,
+    aws_lb_listener.bluegreen_test
+  ]
 }
 
 resource "aws_ecs_cluster" "main" {
@@ -175,8 +207,8 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "main" {
-  # TGは負荷分散先の1単位ごとに作成する。今回は1ALB -> 2ECSの構成なので、ECS毎に作成する
-  for_each = local.services
+  # TGは負荷分散先の1単位ごとに作成
+  for_each = local.target_group_keys
 
   name = "${local.name_prefix}-${each.key}"
   # ターゲットをENIのIPアドレスで指定。ECS Taskのnetwork_mode="awspvc"（=Fargate）では必ずこれ
@@ -221,7 +253,8 @@ resource "aws_lb_listener" "http" {
 
 # ALBとTGの紐づけを規定する
 resource "aws_lb_listener_rule" "http" {
-  for_each = local.services
+  # CodeDeploy対象外のserviceに絞る（CodeDeployは宛先の制御にlistener_ruleを使わない）
+  for_each = local.rolling_services
 
   listener_arn = aws_lb_listener.http.arn
 
@@ -237,6 +270,43 @@ resource "aws_lb_listener_rule" "http" {
   }
 }
 
+# CodeDeployがprodトラフィックの宛先と紐づけるlistener
+resource "aws_lb_listener" "bluegreen_prod" {
+  for_each = local.bluegreen_services
+
+  load_balancer_arn = aws_lb.main.arn
+  port              = each.value.bluegreen.prod_port
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.main["${each.key}-1"].arn
+  }
+
+  # CodeDeployは管理下のlistenerのdefault_actionを書き換えることでトラフィック切り替えを行う
+  # listener->TGの配線はCodeDeployによるデプロイのたびに入れ替わるので、driftを許容する
+  lifecycle {
+    ignore_changes = [default_action]
+  }
+}
+# CodeDeployがtestトラフィックの宛先と紐づけるlistener
+resource "aws_lb_listener" "bluegreen_test" {
+  for_each = local.bluegreen_services
+
+  load_balancer_arn = aws_lb.main.arn
+  port              = each.value.bluegreen.test_port
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.main["${each.key}-2"].arn
+  }
+
+  lifecycle {
+    ignore_changes = [default_action]
+  }
+}
+
 # ALB用SG（Terraformから作成したSGには、デフォルトのegress全許可は含まれないので、明示的Egressが必要）
 resource "aws_security_group" "alb" {
   name        = "${local.name_prefix}-alb"
@@ -249,12 +319,12 @@ resource "aws_security_group" "alb" {
 
 # port:80への全TCP通信を許可
 resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  for_each = toset(var.allowed_ingress_cidrs)
+  for_each = local.alb_ingress_rules
 
   security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = each.value
-  from_port         = 80
-  to_port           = 80
+  cidr_ipv4         = each.value.cidr
+  from_port         = each.value.port
+  to_port           = each.value.port
   ip_protocol       = "tcp"
 }
 

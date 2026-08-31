@@ -59,6 +59,33 @@ data "aws_iam_policy_document" "cd_permission" {
       values   = ["ecs-tasks.amazonaws.com"]
     }
   }
+
+  # 自作のDeploymentGroupに対して、参照・Deployment作成を許可
+  statement {
+    effect = "Allow"
+    actions = [
+      "codedeploy:CreateDeployment",
+      "codedeploy:GetDeploymentGroup"
+    ]
+    resources = [for g in aws_codedeploy_deployment_group.main : g.arn]
+  }
+
+  # CodeDeploy applicationへのappspecの内容（revision）登録を許可
+  statement {
+    effect    = "Allow"
+    actions   = ["codedeploy:RegisterApplicationRevision"]
+    resources = [for a in aws_codedeploy_app.main : a.arn]
+  }
+
+  # 進捗のpolling・traffic切り替え方式参照を許可
+  statement {
+    effect = "Allow"
+    actions = [
+      "codedeploy:GetDeployment",
+      "codedeploy:GetDeploymentConfig",
+    ]
+    resources = ["*"]
+  }
 }
 
 # CD用ロールにinline policyを書き込み

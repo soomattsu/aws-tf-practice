@@ -12,3 +12,8 @@ output "task_execution_role_arn" {
   description = "GitHub Actions用CDロールが、新規作成するTask定義のTask実行ロールとして指定するためのARN"
   value       = aws_iam_role.ecs_task_execution.arn
 }
+
+output "service_name" {
+  description = "CodeDeployのDeploymentGroupが、対象のECS Serviceとして参照するための名前"
+  value       = aws_ecs_service.main.name
+}

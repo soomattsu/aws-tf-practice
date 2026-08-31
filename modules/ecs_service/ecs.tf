@@ -97,6 +97,11 @@ resource "aws_ecs_service" "main" {
     assign_public_ip = false
   }
 
+  # ECS Serviceが何によって・どのようにデプロイされるかを規定する（Service作成後に変更可能）
+  deployment_controller {
+    type = var.deployment_controller
+  }
+
   # 配下のTaskのENI IPをTGに登録するのに加え、LBと連携したライフサイクル管理が行われるようになる
   # - Taskデプロイ時、LBノードによるヘルスチェック（定義はTG側）の結果を参照するようにする
   # - Task終了時、TGへderegisterを呼んでLBノードからの新規接続を停止->deregistration_delayの間待機して既存の接続をdrainする
@@ -107,14 +112,25 @@ resource "aws_ecs_service" "main" {
   }
 
   # lifecycle.ignore_changes: 指定した属性について、prior state(≒実リソース) vs config(HCL評価結果)の差分検知を抑制し、prior stateを正として扱う
-  #   - ここでは「"serviceが指すtask_defのARN"については、prior stateを正とする」という意味
-  #   - 「どのimageをdeployするか＝serviceがどのtask_defを指すか」の定義はGHAの責務になるので、service/task_defの参照関係についてはdriftを許容する
-  # GHAが"ECS Taskのimage更新"のために行う処理
+  #
+  # task_definition
+  # - ここでは「"serviceが指すtask_defのARN"については、prior stateを正とする」という意味
+  # - 「どのimageをdeployするか＝serviceがどのtask_defを指すか」の定義はGHAの責務になるので、service/task_defの参照関係についてはdriftを許容する
+  # - 備考：GHAが"ECS Taskのimage更新"のために行う処理
   #   1. 最新のtask_defを元に、imageのみ差し替えた新規task_def(tf管理外)を作成
   #   2. 1で作成したtask_defを指すように、ECS Serviceを更新
-  # 注意：Terraformによるtask_defリソース自体の変更（ex. cpu/mem）は、apply実行時ではなく、次回のGHA経由deploy時に環境に反映される！
+  # - 注意：Terraformによるtask_defリソース自体の変更（ex. cpu/mem）は、apply実行時ではなく、次回のGHA経由deploy時に環境に反映される！
   #   - 新しいrevisionのtask_defは作成されるが、それがserviceから参照されるのは、GHAがUpdateServiceをkickしたタイミング
+  #
+  # load_balancer
+  # 以下の理由から、同様にignore_changesが必要
+  #   1. deployment_controller=CODE_DEPLOYなServiceに対してecs:UpdateServiceを呼ぶ場合、load_balancerは無効な引数
+  #     -> load_balancer引数に差分がある状態で、当該Serviceリソースのapplyを実行するとAWS側で必ずエラーになる
+  #   2. CodeDeployでのB/G完了後、service.loadBalancersは切り替え後のTGを指し続けるので、prior stateとconfigが必然的にズレる
   lifecycle {
-    ignore_changes = [task_definition]
+    ignore_changes = [
+      task_definition,
+      load_balancer
+    ]
   }
 }

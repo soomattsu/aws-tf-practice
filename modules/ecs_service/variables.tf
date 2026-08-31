@@ -61,3 +61,14 @@ variable "alb_integration" {
     target_container_name = string # Taskの内、実際にトラフィックが転送されるコンテナの名前
   })
 }
+
+variable "deployment_controller" {
+  description = "ECS Serviceのデプロイ主体を規定する設定値"
+  type        = string
+  default     = "ECS"
+
+  validation {
+    condition     = contains(["ECS", "CODE_DEPLOY"], var.deployment_controller)
+    error_message = "deployment_controller must be either ECS or CODE_DEPLOY."
+  }
+}
